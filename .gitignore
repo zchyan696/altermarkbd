@@ -1,0 +1,12 @@
+# Ignora o arquivo de senhas e segredos
+.env
+
+# Ignora os arquivos temporários do Python
+__pycache__/
+
+# Ignora arquivos de log (se você automatizar)
+*.log
+log_execucao.txt
+
+# Ignora arquivos temporários do Excel
+~$*.xlsx
