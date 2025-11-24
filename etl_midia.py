@@ -4,10 +4,12 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 from thefuzz import process, fuzz
 
-# IMPORTA O ESPECIALISTA BRADESCO
-import etl_bradesco
+# --- IMPORTA O ESPECIALISTA BRADESCO ---
+import etl_bradesco 
 
-# --- CONFIGURAÇÃO PADRÃO (SPORTINGBET) ---
+# ==============================================================================
+# 1. CONFIGURAÇÃO PADRÃO (SPORTINGBET E NOVOS)
+# ==============================================================================
 SINONIMOS_COLUNAS = {
     'code':           ['code'],
     'campaign':       ['campaign'],
@@ -36,10 +38,12 @@ SINONIMOS_COLUNAS = {
     'net_total':      ['net total']
 }
 
-SINONIMOS_ABAS_PADRAO = ['media plan']
+SINONIMOS_ABAS_PADRAO = ['media plan', 'plano', 'veiculacao', 'mídia']
 PALAVRA_CHAVE_PADRAO = 'CODE'
 
-# --- FUNÇÕES DE NORMALIZAÇÃO (Mantidas Iguais) ---
+# --- FUNÇÕES DE NORMALIZAÇÃO (O "ROBÔ") ---
+# (Mantém a mesma lógica de sempre)
+
 def carregar_mapas(conexao):
     print("-> Carregando mapas de normalização...")
     mapas = {'exibidor': ({}, {}), 'media': ({}, {}), 'classification': ({}, {}),
@@ -75,6 +79,7 @@ def normalizar_dado_fuzzy(texto_sujo, tipo_dimensao, gabarito_dict, mapa_alias_d
     if pd.isna(texto_sujo) or str(texto_sujo).strip() == '': return None
     texto_sujo_str = str(texto_sujo).strip(); texto_upper = texto_sujo_str.upper()
     if texto_upper in mapa_alias_dict: return mapa_alias_dict[texto_upper]
+    
     if gabarito_dict: 
         melhor_match = process.extractOne(texto_upper, gabarito_dict.keys(), scorer=fuzz.token_sort_ratio)
         if melhor_match and melhor_match[1] >= 90:
@@ -83,10 +88,12 @@ def normalizar_dado_fuzzy(texto_sujo, tipo_dimensao, gabarito_dict, mapa_alias_d
             conexao.execute(sql_aprender, {"sujo": texto_sujo_str, "id": id_limpo}) 
             mapa_alias_dict[texto_upper] = id_limpo
             return id_limpo
+
     params = {"nome": texto_sujo_str}; coluna_fk, valor_fk = "", ""
     if tipo_dimensao == 'media' and 'id_classification_fk' in kwargs_extra:
         id_class_fk = kwargs_extra['id_classification_fk']
         if pd.notna(id_class_fk): coluna_fk = ", id_classification_fk"; valor_fk = ", :id_class_fk"; params['id_class_fk'] = int(id_class_fk) 
+
     sql_novo_gabarito = text(f"INSERT INTO dim_{tipo_dimensao} (nome_oficial {coluna_fk}) VALUES (:nome {valor_fk}) ON CONFLICT (nome_oficial) DO NOTHING RETURNING id_{tipo_dimensao}")
     id_novo = conexao.execute(sql_novo_gabarito, params).scalar() 
     if id_novo is None: id_novo = conexao.execute(text(f"SELECT id_{tipo_dimensao} FROM dim_{tipo_dimensao} WHERE nome_oficial = :nome"), {"nome": texto_sujo_str}).scalar()
@@ -95,6 +102,7 @@ def normalizar_dado_fuzzy(texto_sujo, tipo_dimensao, gabarito_dict, mapa_alias_d
     gabarito_dict[texto_sujo_str] = id_novo; mapa_alias_dict[texto_upper] = id_novo
     return id_novo
 
+# --- FUNÇÃO DE LEITURA PADRÃO (Encapsulada) ---
 def ler_plano_padrao(caminho_completo):
     try:
         xls = pd.ExcelFile(caminho_completo)
@@ -103,28 +111,34 @@ def ler_plano_padrao(caminho_completo):
             if any(s in aba.lower().strip() for s in SINONIMOS_ABAS_PADRAO):
                 aba_alvo = aba; break
         if not aba_alvo: return None, f"Aba padrão não encontrada."
+        
         df_head = pd.read_excel(xls, sheet_name=aba_alvo, header=None, nrows=30)
         linha_cabecalho = -1
         for i, row in df_head.iterrows():
             if any(PALAVRA_CHAVE_PADRAO in str(c).strip().upper() for c in row[:10]):
                 linha_cabecalho = i; break
         if linha_cabecalho == -1: return None, f"Cabeçalho '{PALAVRA_CHAVE_PADRAO}' não encontrado."
+
         df_sujo = pd.read_excel(xls, sheet_name=aba_alvo, header=linha_cabecalho)
         df_sujo.columns = df_sujo.columns.astype(str).str.replace('\n', ' ').str.strip().str.lower()
+        
         df_limpo = pd.DataFrame()
         for col_sql, lista_sinonimos in SINONIMOS_COLUNAS.items():
             match_coluna_excel = None
             for sinonimo in lista_sinonimos:
                 match = next((c for c in df_sujo.columns if sinonimo in c), None)
                 if match: match_coluna_excel = match; break
+            
             if match_coluna_excel: df_limpo[col_sql] = df_sujo[match_coluna_excel]
             else: df_limpo[col_sql] = None
+            
         return df_limpo, "OK"
     except Exception as e: return None, str(e)
 
+
 # --- SCRIPT PRINCIPAL ---
 load_dotenv()
-print("\n--- INICIANDO ETL v8.0 (BRADESCO + AUTO-NULL) ---")
+print("\n--- INICIANDO ETL v10.0 (MODULAR + PADRONIZADO) ---")
 
 db_user = os.getenv('DB_USER'); db_pass = os.getenv('DB_PASS')
 db_host = os.getenv('DB_HOST'); db_port = os.getenv('DB_PORT')
@@ -188,15 +202,17 @@ with db_connection.begin() as conn:
             else: contador_novos += 1
 
             # ==================================================================
-            # ESTRATÉGIA DE LEITURA
+            # ESTRATÉGIA DE LEITURA (MODULAR)
             # ==================================================================
             df_limpo = None
             erro_leitura = ""
 
             if nome_cliente_upper == 'BRADESCO':
+                # Usa o módulo especialista (etl_bradesco.py)
                 df_limpo = etl_bradesco.ler_plano_bradesco(caminho_completo)
                 if df_limpo is None: erro_leitura = "Erro na leitura Bradesco"
             else:
+                # Usa o módulo padrão (Auto-discovery)
                 df_limpo, erro_leitura = ler_plano_padrao(caminho_completo)
 
             if df_limpo is None:
@@ -204,16 +220,15 @@ with db_connection.begin() as conn:
 
             try:
                 # --- GARANTIA DE COLUNAS (O "AUTO-NULL") ---
-                # Se o df_limpo do Bradesco não tiver 'net_total', cria ela como None
                 colunas_obrigatorias_db = list(SINONIMOS_COLUNAS.keys())
                 for col in colunas_obrigatorias_db:
-                    if col not in df_limpo.columns:
-                        df_limpo[col] = None
+                    if col not in df_limpo.columns: df_limpo[col] = None
 
                 if 'code' not in df_limpo.columns or df_limpo['code'].isnull().all():
                      print("     [ALERTA] Coluna 'code' vazia."); continue
-                     
                 df_limpo = df_limpo.dropna(subset=['code'])
+                
+                # Guilhotina (Se existir 'code' sujo)
                 try:
                     coluna_code_upper = df_limpo['code'].astype(str).str.upper().str.strip()
                     indices_total = df_limpo.index[coluna_code_upper.str.contains('TOTAL', na=False)].tolist()
@@ -221,6 +236,24 @@ with db_connection.begin() as conn:
                 except: pass
                 
                 df_limpo = df_limpo[df_limpo['code'].apply(lambda x: len(str(x).strip()) < 25)]
+
+                # ==============================================================
+                # 4.1 PADRONIZAÇÃO DE TEXTO (CIDADES E ESTADOS)
+                # ==============================================================
+                
+                # 1. Cidades e Endereços -> Primeira Letra Maiúscula
+                cols_title = ['market', 'location']
+                for col in cols_title:
+                    if col in df_limpo.columns:
+                        df_limpo[col] = df_limpo[col].astype(str).str.title().str.strip().replace('Nan', None)
+
+                # 2. Siglas -> Tudo Maiúsculo
+                cols_upper = ['country', 'state', 'code']
+                for col in cols_upper:
+                    if col in df_limpo.columns:
+                        df_limpo[col] = df_limpo[col].astype(str).str.upper().str.strip().replace('NAN', None)
+
+                # ==============================================================
 
                 cols_numericas = ['period_quantity', 'purchase_unit', 'net_total', 'net_unit_price', 'weekly_flow', 'weekly_impact', 'periodic_impact']
                 for col in cols_numericas:
@@ -230,6 +263,7 @@ with db_connection.begin() as conn:
                 
                 print("     -> Normalizando...")
                 
+                # Normalização (Agora usa o DF já limpo e padronizado)
                 id_class_series = df_limpo['classification'].apply(lambda x: normalizar_dado_simples(x, 'dim_classification', 'id_classification', gabarito_classification, conn))
                 df_limpo['id_display_type'] = df_limpo['type'].apply(lambda x: normalizar_dado_simples(x, 'dim_display_type', 'id_display_type', gabarito_display_type, conn))
                 df_limpo['id_exibidor'] = df_limpo['exibidor'].apply(lambda x: normalizar_dado_fuzzy(x, 'exibidor', gabarito_exibidor, mapa_exibidor, conn))
@@ -242,19 +276,17 @@ with db_connection.begin() as conn:
                 df_limpo['file_timestamp'] = timestamp_atual
                 df_limpo['is_active'] = True
                 
-                # Filtra para garantir que só colunas que existem na 'fato_midia' sejam enviadas
-                # (Evita erro se o etl_bradesco.py devolveu alguma coluna extra sem querer)
-                colunas_finais = [
+                # Filtra colunas finais
+                cols_finais = [
                     'code', 'size', 'frequency', 'period_quantity', 'insertion_faces_period', 'purchase_unit', 
                     'start_date', 'end_date', 'weekly_flow', 'weekly_impact', 'periodic_impact', 
                     'faces_x_frequency', 'cpm_target', 'net_unit_price', 'net_total', 
                     'id_display_type', 'id_exibidor', 'id_campaign', 'id_target', 'id_media', 'id_cliente',
-                    'arquivo_origem', 'file_timestamp', 'is_active', 
-                    'country', 'market', 'state', 'location' # Colunas de texto de geografia
+                    'arquivo_origem', 'file_timestamp', 'is_active',
+                    'country', 'market', 'state', 'location'
                 ]
                 
-                # Seleciona apenas as colunas existentes
-                df_carga = df_limpo[[c for c in colunas_finais if c in df_limpo.columns]]
+                df_carga = df_limpo[[c for c in cols_finais if c in df_limpo.columns]]
                 
                 df_carga.to_sql('fato_midia', con=conn, if_exists='append', index=False, method='multi')
                 print(f"     -> SUCESSO! {len(df_limpo)} linhas.")
