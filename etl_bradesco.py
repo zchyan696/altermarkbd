@@ -1,31 +1,7 @@
 import pandas as pd
 import os
 from thefuzz import process, fuzz
-
-# ==============================================================================
-# CONFIGURAÇÃO DE SINÔNIMOS (BRADESCO)
-# MANTIDO O EXACT MATCH para colunas gerais.
-# FUZZY 90% para datas e impacto (para tolerar espaços/digitação).
-# ==============================================================================
-SINONIMOS_BRADESCO = {
-    # --- FUZZY 90% (Datas e Impacto) ---
-    'start_date':      ['data de início', 'data de inicio'], 
-    'end_date':        ['data de termino', 'data de término'], 
-    'periodic_impact': ['potencial de impacto pop', 'potencial de impacto  pop'], # AGORA NO FUZZY
-    
-    # --- EXACT MATCH (Colunas Gerais) ---
-    'market':          ['cidade'],
-    'state':           ['uf'],
-    'exibidor':        ['exibidor'],
-    'media':           ['tipo'], 
-    'classification':  ['tipo de mídia'], 
-    'period_quantity': ['período', 'periodo'],
-    'net_total':       ['r$ total liquido'],
-    'cpm_target':      ['cpm (desembolso)'],
-    'insertion_faces_period': ['faces'],
-    'location':        ['mídia', 'midia'], 
-    'size':            ['formato'],
-}
+import settings # <--- Importa o arquivo de configurações
 
 def ler_plano_bradesco(caminho_arquivo):
     print(f"     [MODO BRADESCO] Iniciando leitura complexa...")
@@ -78,37 +54,33 @@ def ler_plano_bradesco(caminho_arquivo):
             
         df_final = pd.concat(dfs_para_juntar, ignore_index=True)
 
-        # 3. PADRONIZAÇÃO VIA SINÔNIMOS (MATCH EXATO/FUZZY)
-        # Limpa o cabeçalho (minúsculo, sem espaços extras)
+        # 3. PADRONIZAÇÃO VIA SINÔNIMOS (USANDO SETTINGS)
         df_final.columns = df_final.columns.astype(str).str.replace('\n', ' ').str.strip().str.lower()
         
         df_padronizado = pd.DataFrame()
         
-        for col_banco, lista_sinonimos in SINONIMOS_BRADESCO.items():
+        # Usa a lista que está no arquivo settings.py
+        for col_banco, lista_sinonimos in settings.SINONIMOS_BRADESCO.items():
             melhor_coluna_excel = None
             
             # --- DECISÃO: O QUE RODA O FUZZY (90%)? ---
-            if col_banco in ['start_date', 'end_date', 'periodic_impact']: # <--- INCLUINDO periodic_impact
-                # RODA FUZZY (90%): Para datas e impacto
+            if col_banco in ['start_date', 'end_date', 'periodic_impact']:
                 melhor_score = 0
                 for sinonimo in lista_sinonimos:
                     match_tuple = process.extractOne(sinonimo, df_final.columns, scorer=fuzz.token_sort_ratio)
                     if match_tuple and match_tuple[1] >= 90 and match_tuple[1] > melhor_score:
                         melhor_score = match_tuple[1]
                         melhor_coluna_excel = match_tuple[0]
-            
             else:
-                # RODA EXACT MATCH: Para todas as outras colunas (segurança contra substring)
+                # RODA EXACT MATCH
                 for sinonimo in lista_sinonimos:
-                    match = next((c for c in df_final.columns if sinonimo == c), None) # <-- BUSCA EXATA
+                    match = next((c for c in df_final.columns if sinonimo == c), None) 
                     if match:
                         melhor_coluna_excel = match
                         break
             
-            # Mapeamento
             if melhor_coluna_excel:
                 df_padronizado[col_banco] = df_final[melhor_coluna_excel]
-        
         
         # 4. INJEÇÃO DE VALORES FIXOS E METADADOS
         if len(df_padronizado) > 0:
